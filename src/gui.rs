@@ -1,6 +1,6 @@
 use crate::utils::{winit_button_to_imgui_button, winit_key_to_imgui_key};
 use std::num::NonZeroU32;
-use std::process::exit;
+use std::time::Instant;
 use anyhow::{Context, Result};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use imgui_sys::*;
@@ -40,13 +40,18 @@ pub struct GuiContexts {
     pub surface: Surface<WindowSurface>,
 }
 
+const WINDOW_SIZE: [u32; 2] = [1600u32, 900u32];
+const WINDOW_TITLE: &str = "VeilDE-rs";
+const FONT_SIZE: f32 = 14.0f32;
+
 struct ImGuiApplication {
     contexts: GuiContexts,
+    last_frame: Option<Instant>,
 }
 
 impl ImGuiApplication {
     pub fn new(contexts: GuiContexts) -> Self {
-        Self { contexts }
+        Self { contexts, last_frame: None }
     }
     pub fn draw(ui: &mut Ui) {
         ui.show_demo_window(&mut true);
@@ -58,15 +63,20 @@ impl ApplicationHandler for ImGuiApplication {
         //unimplemented!()
     }
 
-    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => {
-                exit(0);
-            }
+            WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::RedrawRequested => {
                 let contexts = &mut self.contexts;
 
+                let now = Instant::now();
+                contexts.imgui.io_mut().update_delta_time(now - self.last_frame.unwrap_or(now));
+                self.last_frame = Some(now);
+
+                // clearing the color bit can fail,
+                // and glow does not provide a way
+                // to detect or recover from that error
                 unsafe { contexts.glow.gl_context().clear(glow::COLOR_BUFFER_BIT) };
                 let ui = contexts.imgui.new_frame();
 
@@ -75,13 +85,16 @@ impl ApplicationHandler for ImGuiApplication {
                 contexts.platform
                     .prepare_render(ui, &contexts.window);
 
+                // can't propagate this error,
+                // and if failed, we're probably headed
+                // towards imgui crashing anyways
                 contexts.glow
                     .render(contexts.imgui.render())
                     .expect("Failed to render ImGui data");
 
                 contexts.surface
                     .swap_buffers(&contexts.opengl)
-                    .expect("Failed to swap surface buffers");
+                    .expect("Failed to swap surface buffers"); // can't propagate this error either
             }
 
             WindowEvent::KeyboardInput {
@@ -99,9 +112,7 @@ impl ApplicationHandler for ImGuiApplication {
 
             WindowEvent::CursorMoved {
                 position, ..
-            } => {
-                self.contexts.imgui.io_mut().add_mouse_pos_event([position.x as f32, position.y as f32]);
-            },
+            } => self.contexts.imgui.io_mut().add_mouse_pos_event([position.x as f32, position.y as f32]),
 
             WindowEvent::MouseWheel {
                 delta: MouseScrollDelta::LineDelta(x, y), ..
@@ -110,12 +121,8 @@ impl ApplicationHandler for ImGuiApplication {
             WindowEvent::MouseInput {
                  button, state, ..
             } => {
-                let io = self.contexts.imgui.io_mut();
-
                 if let Some(b) = winit_button_to_imgui_button(button) {
-                    io.add_mouse_button_event(
-                            b, state.is_pressed()
-                        );
+                    self.contexts.imgui.io_mut().add_mouse_button_event(b, state.is_pressed());
                 }
             }
 
@@ -128,16 +135,19 @@ impl ApplicationHandler for ImGuiApplication {
 pub fn init() -> Result<()> {
     let mut imgui = imgui::Context::create();
 
-    unsafe {
-        imgui.fonts().raw_mut().FontBuilderIO = ImGuiFreeType_GetBuilderForFreeType();
-    }
+    // freetype doesn't enable itself
+    // due to a bug in the 'imgui-sys'
+    // crate, that has yet to be patched
+    //
+    // https://github.com/imgui-rs/imgui-rs/issues/773
+    unsafe { imgui.fonts().raw_mut().FontBuilderIO = ImGuiFreeType_GetBuilderForFreeType(); }
 
     imgui.io_mut().font_global_scale = 1f32;
 
     imgui.fonts().add_font(&[
         FontSource::TtfData {
-            data: include_bytes!("../resources/segoeui.ttf"),
-            size_pixels: 14.0f32,
+            data: include_bytes!("../resources/segoeui.ttf"), // TODO: load dynamically
+            size_pixels: FONT_SIZE,
             config: Some(FontConfig {
                 rasterizer_multiply: 1.0,
                 font_builder_flags: ImGuiFreeTypeBuilderFlags_Bitmap,
@@ -149,12 +159,6 @@ pub fn init() -> Result<()> {
                 ..FontConfig::default()
             })
         },
-
-        /*
-        FontSource::DefaultFontData {
-            config: None
-        }
-        */
     ]);
 
     imgui.set_ini_filename(None);
@@ -166,10 +170,17 @@ pub fn init() -> Result<()> {
     let (window, config) = glutin_winit::DisplayBuilder::new()
         .with_window_attributes(Some(
             WindowAttributes::default()
-                .with_title("VeilDE-rs")
+                .with_title(WINDOW_TITLE)
                 .with_transparent(true)
                 .with_fullscreen(None)
-                .with_inner_size(Size::Logical(LogicalSize::new(1600f64, 900f64)))
+                .with_inner_size(
+                    Size::Logical(
+                        LogicalSize::new(
+                            WINDOW_SIZE[0] as f64,
+                            WINDOW_SIZE[1] as f64
+                        )
+                    )
+                )
             )
         ).build(
             &event_loop,
@@ -181,6 +192,9 @@ pub fn init() -> Result<()> {
 
     let window = window.context("Failed to retrieve window")?;
 
+    // glutin does not provide a
+    // safe alternative to creating
+    // display contexts with winit
     let opengl = unsafe {
         config.display().create_context(
             &config,
@@ -193,9 +207,12 @@ pub fn init() -> Result<()> {
                             .as_raw()
                     )
                 )
-        ).expect("Failed to create OpenGL context")
+        ).context("Failed to create OpenGL context")?
     };
 
+    // glutin does not provide a safe
+    // alternative to creating window
+    // surfaces with winit
     let surface = unsafe {
         config
             .display()
@@ -208,25 +225,27 @@ pub fn init() -> Result<()> {
                             .window_handle()
                             .context("Failed to get window handle for surface")?
                             .as_raw(),
-                        NonZeroU32::new(1600u32).expect("Window surface width was zero or out-of-bounds"),
-                        NonZeroU32::new(600u32).expect("Window surface height was zero or out-of-bounds"),
+                        NonZeroU32::new(WINDOW_SIZE[0]).context("Window surface width was zero or out-of-bounds")?,
+                        NonZeroU32::new(WINDOW_SIZE[1]).context("Window surface height was zero or out-of-bounds")?,
                     )
             )
-            .expect("Failed to create window surface")
+            .context("Failed to create window surface")?
     };
 
     let opengl = opengl
         .make_current(&surface)
-        .expect("Failed to make OpenGL context current");
+        .context("Failed to make OpenGL context current")?;
 
     surface.set_swap_interval(
         &opengl,
         SwapInterval::Wait(
             NonZeroU32::new(1)
-                .expect("Swap interval was zero or out-of-bounds")
+                .context("Swap interval was zero or out-of-bounds")?
         )
-    ).expect("Failed to set swap interval");
+    ).context("Failed to set swap interval")?;
 
+    // glow requires using `get_proc_address`,
+    // which is an inherently unsafe concept
     let glow = AutoRenderer::new(
         unsafe {
             glow::Context::from_loader_function_cstr(
@@ -236,7 +255,7 @@ pub fn init() -> Result<()> {
                         .get_proc_address(s)
                         .cast()
                 })
-        }, &mut imgui).expect("Failed to create GLOW context");
+        }, &mut imgui).context("Failed to create GLOW context")?;
 
     platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Rounded);
 

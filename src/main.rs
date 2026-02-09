@@ -1,15 +1,16 @@
 mod gui;
 mod utils;
 
-use native_dialog::DialogBuilder;
+use native_dialog::{DialogBuilder, MessageLevel};
 
 fn main() {
     match gui::init() {
         Ok(_) => {
             DialogBuilder::message()
-                .set_title("VeilDE-rs")
+                .set_title("VeilDE-rs - Success")
                 .set_text("Nothing failed!")
-                .confirm()
+                .set_level(MessageLevel::Info)
+                .alert()
                 .show()
                 .unwrap();
         },
@@ -18,8 +19,9 @@ fn main() {
             eprintln!("{:?}", e);
 
             DialogBuilder::message()
-                .set_title("VeilDE-rs")
-                .set_text(format!("Error: {:#}", e))
+                .set_title("VeilDE-rs - Failure")
+                .set_text(format!("{:#}", e))
+                .set_level(MessageLevel::Error)
                 .alert()
                 .show()
                 .unwrap();
