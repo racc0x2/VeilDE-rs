@@ -48,7 +48,7 @@ pub struct GuiContexts {
 
 const WINDOW_SIZE: [u32; 2] = [1600, 900];
 const WINDOW_TITLE: &str = "VeilDE-rs";
-const FONT_SIZE: f32 = 14.0f32;
+const FONT_SIZE: f64 = 14.0;
 
 struct VeilDEApplication {
     contexts: GuiContexts,
@@ -65,7 +65,7 @@ impl VeilDEApplication {
         let ui = self.contexts.imgui.new_frame();
         {
             ui.window("VeilDE")
-                .size([300.0, 100.0], Condition::FirstUseEver)
+                .size([73.0, 57.0], Condition::FirstUseEver)
                 .build(|| -> Result<()> {
                     if ui.button("blow up") {
                         bail!("boom");
@@ -108,6 +108,20 @@ impl ApplicationHandler for VeilDEApplication {
                     self.contexts.surface
                         .swap_buffers(&self.contexts.opengl)
                         .context("Failed to swap surface buffers")?;
+                }
+
+                WindowEvent::ScaleFactorChanged {
+                    scale_factor: scale, ..
+                } => {
+                    let fonts = self.contexts.imgui.fonts();
+
+                    fonts.clear();
+                    fonts.add_font(get_font_data(scale).as_slice());
+
+                    drop(std::mem::replace(
+                        &mut self.contexts.glow,
+                        init_glow(&self.contexts.opengl, &mut self.contexts.imgui)?
+                    ));
                 }
 
                 WindowEvent::Resized(size) => {
@@ -167,18 +181,18 @@ impl ApplicationHandler for VeilDEApplication {
     }
 }
 
-fn get_font_data(scale: f32) -> Vec<FontSource<'static>> {
+fn get_font_data(scale: f64) -> Vec<FontSource<'static>> {
     vec![
         FontSource::TtfData {
             data: include_bytes!("../resources/segoeui.ttf"), // TODO: load dynamically
-            size_pixels: FONT_SIZE * scale,
+            size_pixels: (FONT_SIZE * scale) as f32,
             config: Some(FontConfig {
                 rasterizer_multiply: 1f32,
                 font_builder_flags: ImGuiFreeTypeBuilderFlags_Bitmap,
 
                 oversample_h: 1i32,
                 oversample_v: 1i32,
-                glyph_offset: [0f32, -5f32 * scale], // TODO: calculate dynamically by checking for blank pixels at the edge of the font atlas
+                glyph_offset: [0f32, (-5f64 * scale) as f32], // TODO: calculate dynamically by checking for blank pixels at the edge of the font atlas
 
                 ..FontConfig::default()
             })
@@ -198,7 +212,7 @@ fn init_imgui() -> Result<ImGuiContext> {
     // https://github.com/imgui-rs/imgui-rs/issues/773
     unsafe { context.fonts().raw_mut().FontBuilderIO = ImGuiFreeType_GetBuilderForFreeType(); }
     context.io_mut().font_global_scale = 1f32; // scale through font data for high quality
-    context.fonts().add_font(get_font_data(1f32).as_slice());
+    context.fonts().add_font(get_font_data(1f64).as_slice());
 
     Ok(context)
 }
