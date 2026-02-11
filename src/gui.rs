@@ -1,4 +1,3 @@
-use crate::utils::{winit_button_to_imgui_button, winit_key_to_imgui_key};
 use anyhow::{anyhow, bail, Context, Error, Result};
 use glutin::config::Config;
 use glutin::{
@@ -7,33 +6,34 @@ use glutin::{
     display::{GetGlDisplay, GlDisplay},
     surface::{GlSurface, Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface}
 };
-use imgui::{Condition, Context as ImGuiContext};
 use imgui::{
     internal::RawCast,
     FontConfig,
     FontSource,
 };
+use imgui::{Condition, Context as ImGuiContext};
 use imgui_glow_renderer::{
     glow,
     glow::HasContext,
     AutoRenderer
 };
-use imgui_sys::{ImGuiFreeType_GetBuilderForFreeType, ImGuiFreeTypeBuilderFlags_Bitmap};
+use imgui_sys::{ImGuiFreeTypeBuilderFlags_Bitmap, ImGuiFreeType_GetBuilderForFreeType};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
+use std::{
+    num::NonZeroU32,
+    sync::mpsc::channel,
+    sync::mpsc::Sender,
+    time::Instant
+};
+use winit::event::Event;
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, Size},
-    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     raw_window_handle::HasWindowHandle,
     window::Window,
     window::{WindowAttributes, WindowId}
-};
-use std::{
-    sync::mpsc::channel,
-    sync::mpsc::Sender,
-    time::Instant,
-    num::NonZeroU32
 };
 
 #[allow(unused)] // contexts are all important, even if not currently used
@@ -85,7 +85,16 @@ impl ApplicationHandler for VeilDEApplication {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        let perform = || -> Result<()> {
+        let mut perform = || -> Result<()> {
+            self.contexts.winit.handle_event::<WindowEvent>(
+                self.contexts.imgui.io_mut(),
+                &self.contexts.window,
+                &Event::WindowEvent {
+                    window_id: self.contexts.window.id(),
+                    event: event.clone()
+                },
+            );
+
             match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -108,52 +117,6 @@ impl ApplicationHandler for VeilDEApplication {
                     self.contexts.surface
                         .swap_buffers(&self.contexts.opengl)
                         .context("Failed to swap surface buffers")?;
-                }
-
-                WindowEvent::ScaleFactorChanged { .. } => {
-                    todo!()
-                }
-
-                WindowEvent::Resized(size) => {
-                    if size.width > 0 && size.height > 0 {
-                        self.contexts.surface.resize(
-                            &self.contexts.opengl,
-                            NonZeroU32::new(size.width).unwrap(),
-                            NonZeroU32::new(size.height).unwrap()
-                        );
-
-                        // must interface with the gl context
-                        // unsafe operation, unavoidable
-                        unsafe {
-                            self.contexts.glow.gl_context().viewport(
-                                0, 0,
-                                size.width as i32, size.height as i32
-                            );
-                        }
-                    }
-                }
-
-                WindowEvent::KeyboardInput { event, .. } => {
-                    if let Some(key) = winit_key_to_imgui_key(event.physical_key) {
-                        self.contexts.imgui
-                            .io_mut()
-                            .add_key_event(
-                                key,
-                                event.state == ElementState::Pressed
-                            );
-                    }
-                },
-
-                WindowEvent::CursorMoved { position, .. } =>
-                    self.contexts.imgui.io_mut().add_mouse_pos_event([position.x as f32, position.y as f32]),
-
-                WindowEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(x, y), .. } =>
-                    self.contexts.imgui.io_mut().add_mouse_wheel_event([x, y]),
-
-                WindowEvent::MouseInput { button, state, .. } => {
-                    if let Some(b) = winit_button_to_imgui_button(button) {
-                        self.contexts.imgui.io_mut().add_mouse_button_event(b, state.is_pressed());
-                    }
                 }
 
                 _ => { }
@@ -190,7 +153,7 @@ fn get_font_data(scale: f64) -> Vec<FontSource<'static>> {
     ]
 }
 
-fn init_imgui(scale: f64) -> Result<ImGuiContext> {
+fn init_imgui() -> Result<ImGuiContext> {
     let mut context = ImGuiContext::create();
 
     context.set_ini_filename(None);
@@ -202,7 +165,7 @@ fn init_imgui(scale: f64) -> Result<ImGuiContext> {
     // https://github.com/imgui-rs/imgui-rs/issues/773
     unsafe { context.fonts().raw_mut().FontBuilderIO = ImGuiFreeType_GetBuilderForFreeType(); }
     context.io_mut().font_global_scale = 1f32; // scale through font data for high quality
-    context.fonts().add_font(get_font_data(scale).as_slice());
+    context.fonts().add_font(get_font_data(1f64).as_slice());
 
     Ok(context)
 }
@@ -312,7 +275,7 @@ pub fn init() -> Result<()> {
     let event_loop = EventLoop::new().context("Failed to create event loop")?;
     let (window, config) = init_glutin(&event_loop)?;
     let (opengl, surface) = init_opengl(&window, &config)?;
-    let mut imgui = init_imgui(window.scale_factor())?;
+    let mut imgui = init_imgui()?;
     let glow = init_glow(&opengl, &mut imgui)?;
     let winit = init_winit(&mut imgui, &window)?;
 

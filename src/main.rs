@@ -1,5 +1,4 @@
 mod gui;
-mod utils;
 
 use native_dialog::{DialogBuilder, MessageLevel};
 
