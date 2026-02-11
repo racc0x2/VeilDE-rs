@@ -65,7 +65,7 @@ impl VeilDEApplication {
         let ui = self.contexts.imgui.new_frame();
         {
             ui.window("VeilDE")
-                .size([73.0, 57.0], Condition::FirstUseEver)
+                .size([73f32, 57f32], Condition::FirstUseEver)
                 .build(|| -> Result<()> {
                     if ui.button("blow up") {
                         bail!("boom");
@@ -110,18 +110,8 @@ impl ApplicationHandler for VeilDEApplication {
                         .context("Failed to swap surface buffers")?;
                 }
 
-                WindowEvent::ScaleFactorChanged {
-                    scale_factor: scale, ..
-                } => {
-                    let fonts = self.contexts.imgui.fonts();
-
-                    fonts.clear();
-                    fonts.add_font(get_font_data(scale).as_slice());
-
-                    drop(std::mem::replace(
-                        &mut self.contexts.glow,
-                        init_glow(&self.contexts.opengl, &mut self.contexts.imgui)?
-                    ));
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    todo!()
                 }
 
                 WindowEvent::Resized(size) => {
@@ -200,7 +190,7 @@ fn get_font_data(scale: f64) -> Vec<FontSource<'static>> {
     ]
 }
 
-fn init_imgui() -> Result<ImGuiContext> {
+fn init_imgui(scale: f64) -> Result<ImGuiContext> {
     let mut context = ImGuiContext::create();
 
     context.set_ini_filename(None);
@@ -212,14 +202,14 @@ fn init_imgui() -> Result<ImGuiContext> {
     // https://github.com/imgui-rs/imgui-rs/issues/773
     unsafe { context.fonts().raw_mut().FontBuilderIO = ImGuiFreeType_GetBuilderForFreeType(); }
     context.io_mut().font_global_scale = 1f32; // scale through font data for high quality
-    context.fonts().add_font(get_font_data(1f64).as_slice());
+    context.fonts().add_font(get_font_data(scale).as_slice());
 
     Ok(context)
 }
 
 fn init_winit(imgui: &mut ImGuiContext, window: &Window) -> Result<WinitPlatform> {
     let mut context = WinitPlatform::new(imgui);
-    context.attach_window(imgui.io_mut(), window, HiDpiMode::Rounded);
+    context.attach_window(imgui.io_mut(), window, HiDpiMode::Default);
 
     Ok(context)
 }
@@ -322,7 +312,7 @@ pub fn init() -> Result<()> {
     let event_loop = EventLoop::new().context("Failed to create event loop")?;
     let (window, config) = init_glutin(&event_loop)?;
     let (opengl, surface) = init_opengl(&window, &config)?;
-    let mut imgui = init_imgui()?;
+    let mut imgui = init_imgui(window.scale_factor())?;
     let glow = init_glow(&opengl, &mut imgui)?;
     let winit = init_winit(&mut imgui, &window)?;
 
