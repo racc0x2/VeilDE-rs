@@ -30,21 +30,26 @@ use imgui::{
 };
 use imgui_sys::{ImGuiFreeTypeBuilderFlags_Bitmap, ImGuiFreeType_GetBuilderForFreeType};
 use anyhow::{anyhow, bail, Context, Error, Result};
+use chrono::Local;
 use imgui::{Condition, Context as ImGuiContext};
 use crate::renderer::VeilDERenderer;
 use glutin::config::Config;
 use imgui_glow_renderer::glow::HasContext;
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalSize, Position, Size};
 use winit::event::Event;
-use winit::window::{Fullscreen, WindowLevel};
-use winit::window::Fullscreen::Borderless;
+use winit::monitor::{MonitorHandle, VideoModeHandle};
 
 const WINDOW_SIZE: [u32; 2] = [1600, 900];
 const WINDOW_TITLE: &str = "VeilDE-rs";
 const FONT_SIZE: f64 = 14.0;
+const TIME_FORMAT: &str = "%I:%M %p";
+const DATE_FORMAT: &str = "%m/%d/%G";
+const TASKBAR_HEIGHT: f32 = 50.0;
 
 #[allow(unused)] // contexts are all important, even if not currently used
 struct VeilDEContexts {
+    pub monitor: MonitorHandle,
+    pub video_mode: VideoModeHandle,
     pub imgui: ImGuiContext,
     pub winit: WinitPlatform,
     pub window: Window,
@@ -76,7 +81,21 @@ impl VeilDEApplicationHandler {
 
 impl VeilDEApplication {
     pub fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
-        let (window, config) = init_glutin(event_loop)?;
+        let monitor = event_loop
+            .primary_monitor()
+            .or_else(
+                || event_loop
+                    .available_monitors()
+                    .next()
+            ).context("Failed to get monitor")?;
+
+        let video_mode = monitor.video_modes().next().context("Failed to get video mode")?;
+        let resolution = video_mode.size();
+        let (window, config) = init_glutin(
+            event_loop,
+            LogicalSize::new(resolution.width + 1, resolution.height + 1),
+            monitor.position()
+        )?;
         let (opengl, surface) = init_opengl(&window, &config)?;
         let mut imgui = init_imgui()?;
         let glow = init_glow(&opengl, &mut imgui)?;
@@ -91,6 +110,8 @@ impl VeilDEApplication {
         ).context("Failed to set swap interval")?;
 
         let contexts = VeilDEContexts {
+            monitor,
+            video_mode,
             glow,
             imgui,
             opengl,
@@ -104,7 +125,7 @@ impl VeilDEApplication {
                 renderer: VeilDERenderer::new(contexts.glow.gl_context()).context("Failed to create VeilDE renderer")?,
                 contexts,
                 last_frame: None,
-                resolution: PhysicalSize::new(0, 0),
+                resolution
             }
         )
     }
@@ -143,6 +164,36 @@ impl VeilDEApplication {
                 Ok(())
             }).unwrap_or(Ok(()))?;
 
+        let size = [self.resolution.width as f32, TASKBAR_HEIGHT];
+        let position = [0f32, self.resolution.height as f32 - TASKBAR_HEIGHT];
+
+        ui.window("Taskbar")
+            .size(size, Condition::Always)
+            .title_bar(false)
+            .resizable(false)
+            .movable(false)
+            .position(position, Condition::Always)
+            .build(|| -> Result<()> {
+                let now = Local::now();
+
+                let time = now.format(TIME_FORMAT).to_string();
+                let date = now.format(DATE_FORMAT).to_string();
+                let display = format!("{time}\n{date}");
+
+                ui.columns(3, "taskbar_columns", true);
+                ui.text("column 1");
+                ui.next_column();
+                ui.text("column 2");
+                ui.next_column();
+                /*
+                let pos = ui.cursor_pos();
+                let size = ui.calc_text_size(display);
+                ui.set_cursor_pos([self.resolution.width as f32 - size[0] - 5f32, TASKBAR_HEIGHT - size[1] - 10f32]);
+                 */
+                ui.text(format!("{time}\n{date}"));
+
+                Ok(())
+            }).unwrap_or(Ok(()))?;
         Ok(())
     }
 
@@ -258,27 +309,16 @@ fn init_winit(imgui: &mut ImGuiContext, window: &Window) -> Result<WinitPlatform
     Ok(context)
 }
 
-fn init_glutin(event_loop: &ActiveEventLoop) -> Result<(Window, Config)> {
-    let monitor = event_loop
-        .primary_monitor()
-        .or_else(
-            || event_loop
-                .available_monitors()
-                .next()
-        ).context("Failed to get monitor")?;
-
-    let video_mode = monitor.video_modes().next().context("Failed to get video mode")?;
-
+fn init_glutin<T: Into<Size<>>, S: Into<Position<>>>(event_loop: &ActiveEventLoop, size: T, position: S) -> Result<(Window, Config)> {
     let (window, config) = glutin_winit::DisplayBuilder::new()
         .with_window_attributes(Some(
             WindowAttributes::default()
                 .with_title(WINDOW_TITLE)
+                .with_inner_size(size)
+                .with_fullscreen(None) // TODO: fullscreen and transparent don't work together
+                .with_decorations(false)
                 .with_transparent(true)
-                .with_inner_size(video_mode.size())
-                .with_fullscreen(Some(Borderless(None))) // TODO: fullscreen and transparent don't work together
-                .with_transparent(true)
-                .with_position(PhysicalPosition::new(0i32, 0i32))
-                .with_decorations(true)
+                .with_position(position)
                 //.with_window_level(WindowLevel::AlwaysOnBottom)
         )
         ).build(
@@ -288,7 +328,6 @@ fn init_glutin(event_loop: &ActiveEventLoop) -> Result<(Window, Config)> {
             cfg.next().context("Failed to get next configuration value").unwrap()
         }
     ).map_err(|_| anyhow!("Failed to initialize glutin"))?;
-
 
     Ok(
         (window.context("Failed to create window")?, config)

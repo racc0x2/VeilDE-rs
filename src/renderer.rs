@@ -63,6 +63,7 @@ impl VeilDERenderer {
         }
     }
 
+    #[allow(unused)]
     pub fn draw(&mut self) -> Result<()> {
         unsafe {
             self.gl.clear_color(0.0, 0.0, 0.0, 0.0);
