@@ -190,7 +190,7 @@ impl VeilDEApplication {
                 let size = ui.calc_text_size(display);
                 ui.set_cursor_pos([self.resolution.width as f32 - size[0] - 5f32, TASKBAR_HEIGHT - size[1] - 10f32]);
                  */
-                ui.text(format!("{time}\n{date}"));
+                ui.text(display);
 
                 Ok(())
             }).unwrap_or(Ok(()))?;
