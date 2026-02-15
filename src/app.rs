@@ -1,23 +1,17 @@
-use anyhow::{anyhow, bail, Context, Error, Result};
-use glutin::config::Config;
+use winit::{
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    raw_window_handle::HasWindowHandle,
+    window::Window,
+    window::{WindowAttributes, WindowId}
+};
 use glutin::{
     config::ConfigTemplateBuilder,
     context::{ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext as OpenGlContext},
     display::{GetGlDisplay, GlDisplay},
     surface::{GlSurface, Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface}
 };
-use imgui::{
-    internal::RawCast,
-    FontConfig,
-    FontSource,
-};
-use imgui::{Condition, Context as ImGuiContext};
-use imgui_glow_renderer::{
-    glow,
-    glow::HasContext,
-    AutoRenderer
-};
-use imgui_sys::{ImGuiFreeTypeBuilderFlags_Bitmap, ImGuiFreeType_GetBuilderForFreeType};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use std::{
     num::NonZeroU32,
@@ -25,19 +19,32 @@ use std::{
     sync::mpsc::Sender,
     time::Instant
 };
-use winit::event::Event;
-use winit::{
-    application::ApplicationHandler,
-    dpi::{LogicalSize, Size},
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    raw_window_handle::HasWindowHandle,
-    window::Window,
-    window::{WindowAttributes, WindowId}
+use imgui_glow_renderer::{
+    glow,
+    AutoRenderer
 };
+use imgui::{
+    internal::RawCast,
+    FontConfig,
+    FontSource,
+};
+use imgui_sys::{ImGuiFreeTypeBuilderFlags_Bitmap, ImGuiFreeType_GetBuilderForFreeType};
+use anyhow::{anyhow, bail, Context, Error, Result};
+use imgui::{Condition, Context as ImGuiContext};
+use crate::renderer::VeilDERenderer;
+use glutin::config::Config;
+use imgui_glow_renderer::glow::HasContext;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::Event;
+use winit::window::{Fullscreen, WindowLevel};
+use winit::window::Fullscreen::Borderless;
+
+const WINDOW_SIZE: [u32; 2] = [1600, 900];
+const WINDOW_TITLE: &str = "VeilDE-rs";
+const FONT_SIZE: f64 = 14.0;
 
 #[allow(unused)] // contexts are all important, even if not currently used
-pub struct GuiContexts {
+struct VeilDEContexts {
     pub imgui: ImGuiContext,
     pub winit: WinitPlatform,
     pub window: Window,
@@ -46,83 +53,157 @@ pub struct GuiContexts {
     pub surface: Surface<WindowSurface>,
 }
 
-const WINDOW_SIZE: [u32; 2] = [1600, 900];
-const WINDOW_TITLE: &str = "VeilDE-rs";
-const FONT_SIZE: f64 = 14.0;
-
 struct VeilDEApplication {
-    contexts: GuiContexts,
+    contexts: VeilDEContexts,
+    renderer: VeilDERenderer,
     last_frame: Option<Instant>,
+    resolution: PhysicalSize<u32>,
+}
+
+struct VeilDEApplicationHandler {
+    application: Option<VeilDEApplication>,
     error_tx: Sender<Error>,
 }
 
+impl VeilDEApplicationHandler {
+    pub fn new(error_tx: Sender<Error>) -> Self {
+        Self {
+            application: None,
+            error_tx,
+        }
+    }
+}
+
 impl VeilDEApplication {
-    pub fn new(contexts: GuiContexts, error_tx: Sender<Error>) -> Self {
-        Self { contexts, last_frame: None, error_tx }
+    pub fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
+        let (window, config) = init_glutin(event_loop)?;
+        let (opengl, surface) = init_opengl(&window, &config)?;
+        let mut imgui = init_imgui()?;
+        let glow = init_glow(&opengl, &mut imgui)?;
+        let winit = init_winit(&mut imgui, &window)?;
+
+        surface.set_swap_interval(
+            &opengl,
+            SwapInterval::Wait(
+                NonZeroU32::new(1)
+                    .context("Swap interval was zero or out-of-bounds")?
+            )
+        ).context("Failed to set swap interval")?;
+
+        let contexts = VeilDEContexts {
+            glow,
+            imgui,
+            opengl,
+            winit,
+            window,
+            surface,
+        };
+
+        Ok(
+            Self {
+                renderer: VeilDERenderer::new(contexts.glow.gl_context()).context("Failed to create VeilDE renderer")?,
+                contexts,
+                last_frame: None,
+                resolution: PhysicalSize::new(0, 0),
+            }
+        )
     }
 
-    pub fn draw(&mut self) -> Result<()> {
-        let ui = self.contexts.imgui.new_frame();
-        {
-            ui.window("VeilDE")
-                .size([73f32, 57f32], Condition::FirstUseEver)
-                .build(|| -> Result<()> {
-                    if ui.button("blow up") {
-                        bail!("boom");
-                    }
+    pub fn pre_window_event(&mut self, event: &WindowEvent) {
+        self.contexts.winit.handle_event::<WindowEvent>(
+            self.contexts.imgui.io_mut(),
+            &self.contexts.window,
+            &Event::WindowEvent {
+                window_id: self.contexts.window.id(),
+                event: event.clone()
+            },
+        );
+    }
 
-                    Ok(())
-                }).unwrap_or(Ok(()))?;
-        }
+    pub fn post_window_event(&mut self, _: &WindowEvent) {
+        self.contexts.window.request_redraw();
+    }
+
+    pub fn shutdown(&mut self) -> Result<()> {
+        self.renderer.shutdown();
+
+        Ok(())
+    }
+
+    fn gui(&mut self) -> Result<()> {
+        let ui = self.contexts.imgui.new_frame();
+
+        ui.window("VeilDE")
+            .size([73f32, 73f32], Condition::FirstUseEver)
+            .build(|| -> Result<()> {
+                if ui.button("blow up") {
+                    bail!("boom");
+                }
+
+                Ok(())
+            }).unwrap_or(Ok(()))?;
+
+        Ok(())
+    }
+
+    pub fn render(&mut self) -> Result<()> {
+        let now = Instant::now();
+        self.contexts.imgui.io_mut().update_delta_time(now - self.last_frame.unwrap_or(now));
+        self.last_frame = Some(now);
+
+        // no safe way to achieve this
+        unsafe { self.contexts.glow.gl_context().clear(glow::COLOR_BUFFER_BIT); }
+
+        //self.renderer.draw().context("Failed to render VeilDE")?;
+        self.gui().context("Failed to render VeilDE GUI")?;
+
+        self.contexts.glow
+            .render(self.contexts.imgui.render())
+            .map_err(|_| anyhow!("Failed to render ImGui renderer data"))?;
+
+        self.contexts.surface
+            .swap_buffers(&self.contexts.opengl)
+            .context("Failed to swap surface buffers")?;
 
         Ok(())
     }
 }
 
-impl ApplicationHandler for VeilDEApplication {
-    fn resumed(&mut self, _: &ActiveEventLoop) {
-        // for mobile platforms. this is a Windows exclusive app
+impl ApplicationHandler for VeilDEApplicationHandler {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.application.is_none() {
+            match VeilDEApplication::new(event_loop) {
+                Ok(app) => self.application = Some(app),
+                Err(e) => {
+                    // unavoidable crash ahead
+                    self.error_tx.send(e).expect("Failed to send error");
+                    event_loop.exit();
+                }
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let mut perform = || -> Result<()> {
-            self.contexts.winit.handle_event::<WindowEvent>(
-                self.contexts.imgui.io_mut(),
-                &self.contexts.window,
-                &Event::WindowEvent {
-                    window_id: self.contexts.window.id(),
-                    event: event.clone()
-                },
-            );
+            if let Some(app) = self.application.as_mut() {
+                app.pre_window_event(&event);
 
-            match event {
-                WindowEvent::CloseRequested => event_loop.exit(),
+                match event {
+                    WindowEvent::CloseRequested => {
+                        app.shutdown().context("Failed to shutdown VeilDE application")?;
+                        event_loop.exit()
+                    },
 
-                WindowEvent::RedrawRequested => {
-                    let now = Instant::now();
-                    self.contexts.imgui.io_mut().update_delta_time(now - self.last_frame.unwrap_or(now));
-                    self.last_frame = Some(now);
+                    WindowEvent::RedrawRequested => {
+                        app.render().context("Failed to draw VeilDE application")?;
+                    }
 
-                    // clearing the color bit can fail,
-                    // and glow does not provide a way
-                    // to detect or recover from that error
-                    unsafe { self.contexts.glow.gl_context().clear(glow::COLOR_BUFFER_BIT) };
-
-                    self.draw()?;
-
-                    self.contexts.glow
-                        .render(self.contexts.imgui.render())
-                        .map_err(|_| anyhow!("Failed to render ImGui renderer data"))?;
-
-                    self.contexts.surface
-                        .swap_buffers(&self.contexts.opengl)
-                        .context("Failed to swap surface buffers")?;
+                    _ => { }
                 }
 
-                _ => { }
+                app.post_window_event(&event);
             }
 
-            self.contexts.window.request_redraw();
             Ok(())
         };
 
@@ -177,21 +258,28 @@ fn init_winit(imgui: &mut ImGuiContext, window: &Window) -> Result<WinitPlatform
     Ok(context)
 }
 
-fn init_glutin(event_loop: &EventLoop<()>) -> Result<(Window, Config)> {
+fn init_glutin(event_loop: &ActiveEventLoop) -> Result<(Window, Config)> {
+    let monitor = event_loop
+        .primary_monitor()
+        .or_else(
+            || event_loop
+                .available_monitors()
+                .next()
+        ).context("Failed to get monitor")?;
+
+    let video_mode = monitor.video_modes().next().context("Failed to get video mode")?;
+
     let (window, config) = glutin_winit::DisplayBuilder::new()
         .with_window_attributes(Some(
             WindowAttributes::default()
                 .with_title(WINDOW_TITLE)
                 .with_transparent(true)
-                .with_fullscreen(None)
-                .with_inner_size(
-                    Size::Logical(
-                        LogicalSize::new(
-                            WINDOW_SIZE[0] as f64,
-                            WINDOW_SIZE[1] as f64
-                        )
-                    )
-                )
+                .with_inner_size(video_mode.size())
+                .with_fullscreen(Some(Borderless(None))) // TODO: fullscreen and transparent don't work together
+                .with_transparent(true)
+                .with_position(PhysicalPosition::new(0i32, 0i32))
+                .with_decorations(true)
+                //.with_window_level(WindowLevel::AlwaysOnBottom)
         )
         ).build(
         event_loop,
@@ -200,6 +288,7 @@ fn init_glutin(event_loop: &EventLoop<()>) -> Result<(Window, Config)> {
             cfg.next().context("Failed to get next configuration value").unwrap()
         }
     ).map_err(|_| anyhow!("Failed to initialize glutin"))?;
+
 
     Ok(
         (window.context("Failed to create window")?, config)
@@ -273,19 +362,6 @@ fn init_glow(opengl: &OpenGlContext, imgui: &mut ImGuiContext) -> Result<AutoRen
 
 pub fn init() -> Result<()> {
     let event_loop = EventLoop::new().context("Failed to create event loop")?;
-    let (window, config) = init_glutin(&event_loop)?;
-    let (opengl, surface) = init_opengl(&window, &config)?;
-    let mut imgui = init_imgui()?;
-    let glow = init_glow(&opengl, &mut imgui)?;
-    let winit = init_winit(&mut imgui, &window)?;
-
-    surface.set_swap_interval(
-        &opengl,
-        SwapInterval::Wait(
-            NonZeroU32::new(1)
-                .context("Swap interval was zero or out-of-bounds")?
-        )
-    ).context("Failed to set swap interval")?;
 
     // winit advises using Poll for vertically synced apps
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -293,17 +369,7 @@ pub fn init() -> Result<()> {
     let (tx, rx) = channel::<Error>();
 
     event_loop.run_app(
-        &mut VeilDEApplication::new(
-            GuiContexts {
-                glow,
-                surface,
-                opengl,
-                imgui,
-                winit,
-                window,
-            },
-            tx
-        )
+        &mut VeilDEApplicationHandler::new(tx)
     ).context("Failed to run app loop")?;
 
     if let Ok(error) = rx.try_recv() {

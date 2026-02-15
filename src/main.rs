@@ -1,9 +1,11 @@
-mod gui;
+mod app;
+mod consts;
+mod renderer;
 
 use native_dialog::{DialogBuilder, MessageLevel};
 
 fn main() {
-    match gui::init() {
+    match app::init() {
         Ok(_) => {
             DialogBuilder::message()
                 .set_title("VeilDE-rs - Success")
