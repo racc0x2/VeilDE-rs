@@ -155,7 +155,9 @@ impl VeilDEApplication {
         let ui = self.contexts.imgui.new_frame();
 
         ui.window("VeilDE")
-            .size([73f32, 73f32], Condition::FirstUseEver)
+            .size([72f32, 56f32], Condition::Always)
+            .resizable(false)
+            .collapsible(false)
             .build(|| -> Result<()> {
                 if ui.button("blow up") {
                     bail!("boom");
@@ -167,7 +169,7 @@ impl VeilDEApplication {
         let size = [self.resolution.width as f32, TASKBAR_HEIGHT];
         let position = [0f32, self.resolution.height as f32 - TASKBAR_HEIGHT];
 
-        ui.window("Taskbar")
+        ui.window("_taskbar")
             .size(size, Condition::Always)
             .title_bar(false)
             .resizable(false)
@@ -180,7 +182,7 @@ impl VeilDEApplication {
                 let date = now.format(DATE_FORMAT).to_string();
                 let display = format!("{time}\n{date}");
 
-                ui.columns(3, "taskbar_columns", true);
+                ui.columns(3, "_taskbar_columns", true);
                 ui.text("column 1");
                 ui.next_column();
                 ui.text("column 2");
