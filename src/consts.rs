@@ -47,3 +47,10 @@ void main() {
     frag_color = linear_to_srgb(color);
 }
 "#;
+
+pub const WINDOW_SIZE: [u32; 2] = [1600, 900];
+pub const WINDOW_TITLE: &str = "VeilDE-rs";
+pub const FONT_SIZE: f64 = 14.0;
+pub const TIME_FORMAT: &str = "%I:%M %p";
+pub const DATE_FORMAT: &str = "%m/%d/%G";
+pub const TASKBAR_HEIGHT: f32 = 50.0;

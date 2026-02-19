@@ -33,18 +33,12 @@ use anyhow::{anyhow, bail, Context, Error, Result};
 use chrono::Local;
 use imgui::{Condition, Context as ImGuiContext};
 use crate::renderer::VeilDERenderer;
+use crate::consts::*;
 use glutin::config::Config;
 use imgui_glow_renderer::glow::HasContext;
 use winit::dpi::{LogicalSize, PhysicalSize, Position, Size};
 use winit::event::Event;
 use winit::monitor::{MonitorHandle, VideoModeHandle};
-
-const WINDOW_SIZE: [u32; 2] = [1600, 900];
-const WINDOW_TITLE: &str = "VeilDE-rs";
-const FONT_SIZE: f64 = 14.0;
-const TIME_FORMAT: &str = "%I:%M %p";
-const DATE_FORMAT: &str = "%m/%d/%G";
-const TASKBAR_HEIGHT: f32 = 50.0;
 
 #[allow(unused)] // contexts are all important, even if not currently used
 struct VeilDEContexts {
